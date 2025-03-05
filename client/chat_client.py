@@ -10,7 +10,6 @@ from utils.utils import RoomTypes
 class ClientInfo:
     client_conn: socket
     username: str
-    id: str =  uuid.uuid4()
     current_room = None
 
 
@@ -24,7 +23,6 @@ class ChatClient:
 
         except Exception as e:
             raise Exception(f"Unable to connect to server {host,listen_port} {repr(e)} ")
-
 
         self.username = input("Enter your username:")  #todo validate username by regex and not empty
         self.choose_room()

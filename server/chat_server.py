@@ -4,7 +4,6 @@ import threading
 import typing
 from datetime import datetime
 from collections import defaultdict
-from tokenize import group
 
 from client.chat_client import ClientInfo
 from utils import RoomTypes
@@ -12,6 +11,7 @@ from utils import RoomTypes
 # from utils import RoomTypes
 
 LISTENER_LIMIT = 5
+
 
 class ChatServer:
     def __init__(self, *, host, listen_port):
@@ -23,19 +23,17 @@ class ChatServer:
 
         self.server.listen(5)
 
-        self.active_clients: typing.Set[ClientInfo] = set() # send msg to all active and update db, i wont send to unconnected client , hw will fetch it when he only gt to the room
-        self.rooms_to_clients: typing.DefaultDict[RoomTypes,typing.List[ClientInfo]]= defaultdict(list)
+        self.active_clients: typing.Set[ClientInfo] = set()  # send msg to all active and update db, i wont send to unconnected client , hw will fetch it when he only gt to the room
+        self.rooms_to_clients: typing.DefaultDict[RoomTypes, typing.List[ClientInfo]] = defaultdict(list)
         self.db = sqlite3.connect('chat.db')
         self.cursor = self.db.cursor()
 
+    def client_handler(self, conn):  # update db, clients duplicate manage
+        sender_username = conn.recv(1024).decode('utf-8')
+        client_info = ClientInfo(client_conn=conn, username=sender_username)
+        self.store_user(sender_username)
 
-
-    def client_handler(self, conn):       #update db, clients duplicate manage
-        username= conn.recv(1024).decode('utf-8')
-        client_info = ClientInfo(client_conn=conn, username=username)
-        user_id = ...
-        #self.save_usr_name()
-        room_type= conn.recv(1024).decode('utf-8')
+        room_type = conn.recv(1024).decode('utf-8')
         group_name = conn.recv(1024).decode('utf-8')
 
         print(f"server got room {room_type}, {type(room_type)}")
@@ -43,41 +41,29 @@ class ChatServer:
         while True:
             msg = conn.recv(2048).decode('utf-8')
             print(f"server got msg {msg}")
-            if RoomTypes[room_type.upper()] == RoomTypes.PRIVATE:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                print(f"server got group name {group_name}")
-                #save_message()
-                #save_message_in_rooom?
+            group_name = group_name if RoomTypes[room_type.upper()] == RoomTypes.PRIVATE else room_type
+            print(f"group name: {group_name}")
 
-            else:
-                group_name = room_type
-                self.broadcast(username, room_type, msg)
-                # self.save_message()
-
-            # room_creation() , get_room_id()
+            self.create_room(group_name)
+            self.store_message_in_room(msg, sender_username, group_name, timestamp)
 
             client_info.current_room = group_name
 
-            self.active_clients.add(client_info)
+            # self.active_clients.add(client_info)
             self.rooms_to_clients[RoomTypes[room_type]].append(client_info)
             print(self.rooms_to_clients)
 
-
-    def send_message_to_room(self, conn, room_id):
-        ...
-
-
-    # Send messages to all clients that are currently connected to the server
-    def broadcast(self, sender_username, room, msg):
-        a = self.rooms_to_clients.get(RoomTypes[room])
-        print(a)
-        if clients_in_room  := self.rooms_to_clients.get(RoomTypes[room]):
-            print(f"clients in room {clients_in_room}")
-            for client in clients_in_room:
-                final_msg = f"{datetime.now()} {sender_username} {msg}"
-                client.client_conn.send(final_msg.encode('utf-8'))  #json with time-user-msg
-        else:
-            print("Message")
+    # def broadcast(self, msg, sender, room, timestamp):
+    #     a = self.rooms_to_clients.get(RoomTypes[room])
+    #     print(a)
+    #     if clients_in_room  := self.rooms_to_clients.get(RoomTypes[room]):
+    #         print(f"clients in room {clients_in_room}")
+    #         for client in clients_in_room:
+    #             final_msg = f"[{timestamp}] [{sender}] : {msg}"
+    #             client.client_conn.send(final_msg.encode('utf-8'))  #json with time-user-msg
+    #
 
     def setup_database(self):
         self.cursor.execute('''
@@ -104,50 +90,38 @@ class ChatServer:
             FOREIGN KEY (room_id) REFERENCES rooms(id) 
             );
         ''')
-
-        #rooms- messages
         self.db.commit()
 
     def store_user(self, username):
         self.cursor.execute('INSERT IGNORE INTO users (usernames) VALUES (?)', (username,))
         self.db.commit()
-        ...
 
-    def store_message(self, text_message, sender_id, room_id, timestamp):
+    def get_user_id_from_users(self, username) -> int:
+        self.cursor.execute('SELECT id FROM users where username = ?', (username,))
+        return self.cursor.fetchone()[0]
+
+    def store_message_in_room(self, text_message, username, room_name, timestamp):
+        sender_id = self.get_user_id_from_users(username)
+        room_id = self.get_room_id_from_rooms(room_name)
+
         self.cursor.execute('''
         INSERT INTO messages (text_message, sender_id, room_id, timestamp)
         VALUES (?,?,?,?)''', (text_message, sender_id, room_id, timestamp))
         self.db.commit()
 
-    def get_stored_messages(self, room_id):
+    def get_stored_messages_in_room(self, room_id, timestamp):
         ...
 
-    def send_messages_for_room(self, conn, room_id):
-        ...
-
-    def room_creation(self, room_name):
+    def create_room(self, room_name):
         self.cursor.execute('INSERT IGNORE INTO rooms (room_name) VALUES (?)', (room_name,))
         self.db.commit()
 
-    def get_room_id(self, room_name) -> int:
+    def get_room_id_from_rooms(self, room_name) -> int:
         self.cursor.execute('SELECT id FROM rooms WHERE room_name = ?', (room_name,))
         return self.cursor.fetchone()[0]
 
-
-
-
-
-
-    #
-    # def table_creation(self):
-    #     ...
-    #
-    # def store_message(self):
-#          ...
     # def file_transfer_handler(self):
     #     ...
-
-
 
     def start(self):
         print("Server started...")
@@ -158,18 +132,17 @@ class ChatServer:
             thread.start()
 
 
-
 def main():
     server = ChatServer(host='127.0.0.1', listen_port=3)
     server.start()
 
+
 if __name__ == '__main__':
     main()
 
-
-#todo upload and download files form other computers using q and threading
-#todo if i have the same functionality create utils.py
-#todo manage mapping room_to_clients
-#todo clients in global are clients that have login or just clients that picks this ?
+# todo upload and download files form other computers using q and threading
+# todo if i have the same functionality create utils.py
+# todo manage mapping room_to_clients
+# todo clients in global are clients that have login or just clients that picks this ?
 # add some ttl if x not happens in x time
-#todo solving switching port all the time
+# todo solving switching port all the time
