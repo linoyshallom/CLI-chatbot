@@ -1,6 +1,7 @@
 import dataclasses
 import socket
 import threading
+import typing
 from datetime import datetime
 
 from utils.utils import RoomTypes
@@ -10,8 +11,9 @@ from utils.utils import RoomTypes
 class ClientInfo:
     client_conn: socket.socket
     username: str
-    current_room = None
-    #joined_timestamp:typing.Optional[datetime] = None
+    room_type: RoomTypes = None #no room at first
+    current_room: typing.Optional[str] = None
+    user_joined_timestamp:typing.Optional[datetime] = None
 
 
 class ChatClient:
@@ -61,6 +63,10 @@ class ChatClient:
                     received_thread = threading.Thread(target=self.receive_message,
                                                        daemon=True)  # Automatically stop when the main program exits.
                     received_thread.start()
+
+                    self.received_history_flag.wait() #waiting this to be set before sending a message
+                    self.receive_message_flag.wait()
+
                     break
 
             except KeyError:
@@ -88,26 +94,29 @@ class ChatClient:
         self.received_history_flag.wait()
 
         while True:
-            if self.receive_message_flag.wait(2):
+            if self.receive_message_flag.wait(3):
                 msg = input(f"Enter your message :  ")
 
-                try:
-                    if msg.lower() == "/switch":
-                        self.received_history_flag.clear()
-                        self.client.send(msg.encode('utf-8'))
-                        self.choose_room()
-                    else:
-                        self.client.send(msg.encode('utf-8'))
+            else:
+                msg = input(f"Enter your message :  ") #still send a message if flag wasn't set
 
-                    #block writing before receiving again
-                    self.receive_message_flag.clear()
+            try:
+                if msg.lower() == "/switch":
+                    self.client.send(msg.encode('utf-8'))
+                    self.received_history_flag.clear()
+                    self.choose_room()
+                else:
+                    self.client.send(msg.encode('utf-8'))
 
-                except Exception as e:
-                    raise f"Error sending message: {repr(e)}"
+                #block writing before receiving again
+                self.receive_message_flag.clear()
+
+            except Exception as e:
+                raise f"Error sending message: {repr(e)}"
 
 
 def main():
-    _ = ChatClient(host='127.0.0.1', listen_port=8)
+    _ = ChatClient(host='127.0.0.1', listen_port=1)
 
 if __name__ == '__main__':
     main()

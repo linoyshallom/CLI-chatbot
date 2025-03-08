@@ -27,8 +27,7 @@ class ChatServer:
         self.chat_db = ChatDB()
         self.chat_db.setup_database()
 
-        self.room_setup_done = False
-        self.room_setup_lock = threading.Lock()
+        self.room_setup_done_flag = threading.Event()
 
     def client_handler(self, conn):
         sender_username = conn.recv(1024).decode('utf-8')
@@ -36,64 +35,75 @@ class ChatServer:
         self.chat_db.store_user(sender_username.strip())
 
         client_info = ClientInfo(client_conn=conn, username=sender_username)
-        group_name = ''
+
+        print(f"setup")
+        room_setup_thread = threading.Thread(target=self.room_setup, args=(conn, client_info))
+        room_setup_thread.start()
+
+        #listen for massages after setup
+        print("listen")
+        received_messages_thread = threading.Thread(target=self.receiving_messages, args=(conn,client_info,)) #get client info?
+        received_messages_thread.start()
+
+    def room_setup(self, conn, client_info):
         while True:
-            if not self.room_setup_done:
-                print(f"room setup done in client handler {self.room_setup_done}")
+            room_type = conn.recv(1024).decode('utf-8')
 
-                room_type = conn.recv(1024).decode('utf-8')
+            if RoomTypes[room_type.upper()] == RoomTypes.PRIVATE:
+                group_name = conn.recv(1024).decode('utf-8')
+                user_join_timestamp = conn.recv(1024).decode('utf-8')
+                client_info.user_joined_timestamp = user_join_timestamp
+                print(f"user join to room timestamp {user_join_timestamp}")
 
-                if RoomTypes[room_type.upper()] == RoomTypes.PRIVATE:
-                    group_name = conn.recv(1024).decode('utf-8')
-                    user_join_timestamp = conn.recv(1024).decode('utf-8')
-                    print(f"user join to room timestamp {user_join_timestamp}")
-
-                    self.chat_db.create_room(group_name)
-                    self.chat_db.send_previous_messages_in_room(client_info.client_conn, group_name, user_join_timestamp)
-                else:
-                    group_name = room_type
-                    self.chat_db.create_room(group_name)
-                    self.chat_db.send_previous_messages_in_room(client_info.client_conn, group_name)
-
-                with self.room_setup_lock:
-                    self.room_setup_done = True
-
-                client_info.current_room = group_name
-                self.room_name_to_active_clients[group_name].append(client_info)  #remove from mapping after client leave this room by switch or exit, check if noe exist
-                print(f"mapping room to clients: {self.room_name_to_active_clients}")
-
-            #listen for massages after setup
-            received_messages_thread = threading.Thread(target=self.receiving_messages, args=(conn,group_name,sender_username,))
-            received_messages_thread.start()
+                self.chat_db.create_room(group_name)
+                self.chat_db.send_previous_messages_in_room(client_info.client_conn, group_name, user_join_timestamp )
+            else:
+                group_name = room_type
+                self.chat_db.create_room(group_name)
+                self.chat_db.send_previous_messages_in_room(client_info.client_conn, group_name)
 
 
-    def receiving_messages(self, conn, group_name, sender_username):
+            client_info.room_type = room_type
+            client_info.current_room = group_name
+            self.room_name_to_active_clients[group_name].append(client_info)  # remove from mapping after client leave this room by switch or exit, check if noe exist
+
+            self.room_setup_done_flag.set()
+
+            print(f"client in setup: {client_info}")
+            print(f"mapping room to clients: {self.room_name_to_active_clients}")
+
+            break
+
+    def receiving_messages(self, conn, client_info):
+        #if not set dont send here
+        print(f"client in receiving  {client_info}")
         while True:
-            if msg := conn.recv(2048).decode('utf-8'):
-                if msg == '/switch':
-                    self.room_name_to_active_clients[group_name] =\
-                        [client for client in self.room_name_to_active_clients[group_name]
-                         if client.username != sender_username]
+                self.room_setup_done_flag.wait()
 
-                    print(f"removing client mapping: {self.room_name_to_active_clients}")
-                    with self.room_setup_lock:
-                        self.room_setup_done = False
-                        print(f"room_setup_done in receiving {self.room_setup_done}")
+                if msg := conn.recv(2048).decode('utf-8'):
+                    if msg == '/switch':
+                        self.room_setup_done_flag.clear()
 
-                    self.client_handler(conn)
+                        self.room_name_to_active_clients[client_info.current_room] =\
+                            [client for client in self.room_name_to_active_clients[client_info.current_room]
+                             if client.username != client_info.username]
 
-                else:
-                    print(f"got message {msg}")
-                    msg_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        print(f"removing client mapping: {self.room_name_to_active_clients}")
 
-                    self.broadcast_to_all_clients_in_room(msg, group_name, sender_username,msg_timestamp)
-                    self.chat_db.store_message(msg, sender_username, group_name, msg_timestamp)
+                        self.room_setup(conn, client_info)
+
+                    else:
+                        print(f"got message {msg}")
+                        msg_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                        self.broadcast_to_all_clients_in_room(msg, client_info.current_room, client_info.username,msg_timestamp)
+                        self.chat_db.store_message(msg, client_info.username, client_info.current_room, msg_timestamp)
 
     def broadcast_to_all_clients_in_room(self, msg, room_name, sender_name, msg_timestamp):
         #send to all active clients in the room
         if clients_in_room := self.room_name_to_active_clients.get(room_name):
             for client in clients_in_room:
-                if client.current_room == room_name: #check their conn
+                if client.current_room == room_name:
                     final_msg = f"[{msg_timestamp}] [{sender_name}]: {msg} "
                     client.client_conn.send(final_msg.encode('utf-8'))
                     print(f"send to {client.username}")
@@ -108,7 +118,7 @@ class ChatServer:
 
 
 def main():
-    server = ChatServer(host='127.0.0.1', listen_port=8)
+    server = ChatServer(host='127.0.0.1', listen_port=1)
     server.start()
 
 
