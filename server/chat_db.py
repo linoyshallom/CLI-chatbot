@@ -1,6 +1,7 @@
 import sqlite3
 import typing
 
+END_HISTORY_RETRIEVAL = "END_HISTORY_RETRIEVAL"
 
 class ChatDB:
 
@@ -29,7 +30,7 @@ class ChatDB:
                text_message TEXT NOT NULL,
                sender_id INTEGER NOT NULL,
                room_id INTEGER NOT NULL,
-               timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+               timestamp DATETIME NOT NULL,
                FOREIGN KEY (sender_id) REFERENCES users(id), 
                FOREIGN KEY (room_id) REFERENCES rooms(id) 
                );
@@ -43,6 +44,7 @@ class ChatDB:
         cursor = db.cursor()
 
         room_id = ChatDB.get_room_id_from_rooms(room_name, cursor)
+        print(f"room name: {room_name}, room id {room_id}, joined timestamp {join_timestamp}")
 
         if join_timestamp:
             cursor.execute('''
@@ -62,10 +64,14 @@ class ChatDB:
         if old_messages := cursor.fetchall():
             for text_message, sender_id, timestamp in old_messages:
                 old_msg_sender = ChatDB.get_user_name_from_users(sender_id, cursor)
-                final_msg = f"[{timestamp}] [{old_msg_sender}]: {text_message}"
+                final_msg = f"[{timestamp}] [{old_msg_sender}]: {text_message} "
                 conn.send(final_msg.encode('utf-8'))
+
+            conn.send(END_HISTORY_RETRIEVAL.encode())
+
         else:
-            print(f"No messages in this chat yet ...".encode('utf-8'))
+            print("No messages in this chat yet ...".encode('utf-8'))
+            conn.send("No messages in this chat yet ...".encode('utf-8'))
 
         db.close()
 
@@ -77,6 +83,8 @@ class ChatDB:
         cursor.execute('INSERT OR IGNORE INTO users (username) VALUES (?)', (username,))
         db.commit()
         db.close()
+
+        # check if user is None conn.send() to user to write again
 
     @staticmethod
     def store_message(text_message, username, room_name, timestamp):  # not sent to db as well
@@ -109,6 +117,7 @@ class ChatDB:
 
     @staticmethod
     def create_room(room_name):
+        print("creation room")
         db = sqlite3.connect('chat.db')
         cursor = db.cursor()
 
